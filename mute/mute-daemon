@@ -1,0 +1,144 @@
+#!/usr/bin/env python
+
+import serial
+import os
+import datetime
+import collections
+import numpy
+import time
+import socket
+import argparse
+import sys
+from ConfigParser import SafeConfigParser
+from subprocess import Popen
+
+def sendToGraphite(opts, data):
+    carbon_server = opts.get('default', 'carbon_server')
+    carbon_port   = opts.getint('default', 'carbon_port')
+    sock = socket.socket()
+
+    try:
+        sock.connect((carbon_server, carbon_port))
+    except:
+        print "%s Unable to send metric data to %s:%s" % (datetime.datetime.now(), carbon_server, carbon_port )
+        return data
+
+    for metric in data:
+        sock.sendall(metric)
+
+    sock.close()
+    return []
+
+        
+    
+def parse_args():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter)
+    parser.add_argument("-c", "--config", help="Config file.", default="/usr/local/etc/mute-daemon.cfg")
+    opts = parser.parse_args()
+
+    """Parse config file arguments"""
+    config = SafeConfigParser()
+
+    if os.path.exists(os.path.expanduser(opts.config)):
+        config.read(os.path.expanduser(opts.config))
+    else:
+        print "# No valid config file found at %s" % opts.config
+        sys.exit(1)
+    return config
+
+
+def main():
+
+    global opts
+    opts = parse_args()
+
+
+    ser = serial.Serial(port=opts.get('default', 'serialport'), timeout=0.5)
+    counter = 0
+    history_len = 20
+    data_mute = collections.deque(maxlen=(history_len * 2))
+    data_unmute = collections.deque(maxlen=(history_len * 2))
+    action = ""
+    last_change = datetime.datetime.now()
+    last_stats  = datetime.datetime.now()
+    time_muted = 0.0
+    time_unmuted = 0.0
+    time_switching = 0.0
+    current_state = "mute"
+    ser.write("%s" % current_state)
+    metric_data = {}
+    buffer = []
+    
+    while True:
+        stats_delta = ((datetime.datetime.now() - last_stats).seconds * 1.0)
+
+        ser.write("%s" % current_state)
+
+        if counter > 1 and stats_delta > 9:
+            last_stats = datetime.datetime.now()
+            #print "time muted: %.3f time unmuted: %.3f switching: %.3f" % (time_muted, time_unmuted, time_switching)
+            last_change_delta = ((datetime.datetime.now() - last_change).seconds * 1.0) + ((datetime.datetime.now() - last_change).microseconds / 1000000.0)
+            mute_temp_adj = 0
+            unmute_temp_adj = 0
+            if current_state == "mute":
+                mute_temp_adj = last_change_delta
+            if current_state == "unmute":
+                unmute_temp_adj = last_change_delta
+
+            metric_data['mute.time']   = time_muted + mute_temp_adj
+            metric_data['mute.min']    = numpy.nanmin(data_mute)
+            metric_data['mute.max']    = numpy.nanmax(data_mute)
+            metric_data['mute.avg']    = numpy.average(data_mute)
+            metric_data['unmute.time'] = time_unmuted + unmute_temp_adj
+            metric_data['unmute.min']  = numpy.nanmin(data_unmute)
+            metric_data['unmute.max']  = numpy.nanmax(data_unmute)
+            metric_data['unmute.avg']  = numpy.average(data_unmute)
+            metric_data['switching.time'] = time_switching
+      
+            for k,v in metric_data.iteritems():
+                metric = "%s.%s %s %s\n" % (opts.get('default', 'switchmetric'), k, v, int(time.time()))      
+                buffer.append(metric)
+            buffer = sendToGraphite(opts, buffer)
+            
+
+        read =  ser.readline()
+        #if len(read) >= 1:
+        #    print "%s %s" % (datetime.datetime.now(), read)
+        if len(read) >= 4 and read[0] == "1" and read[1] == "1":
+            os.system("/usr/bin/caffeinate -u -t 1 &")
+            if read[3] == "1":
+                action = "unmute"
+            if read[3] == "0":
+                action = "mute"
+            counter += 1
+            current_state = action
+
+            start = datetime.datetime.now()
+            os.system("osascript /usr/local/bin/mute-atr.scpt %s" % ( (int(read[3]) * 100) ) )
+            
+            ser.write("%s" % action)
+            os.system("/usr/bin/caffeinate -u -t 1 &")
+            end = datetime.datetime.now()
+
+            interval = ((start - last_change).seconds * 1.0) + ((start - last_change).microseconds / 1000000.0)
+            last_change = start
+            delta = ((end - start).seconds * 1.0) + ((end - start).microseconds / 1000000.0)
+
+            if action == "mute":
+                time_unmuted += interval
+
+            if action == "unmute":
+                time_muted += interval
+
+            time_switching += delta
+
+            if action == "unmute":
+                data_unmute.append(delta)
+            if action == "mute":
+                data_mute.append(delta)
+
+            current_state = action
+            print "%s ATR Mic: %s (%.3f) (%.3f)" % (start, action.ljust(7), delta, interval )
+
+if __name__ == "__main__":
+    main()
