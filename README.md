@@ -17,13 +17,15 @@ use and the prefix for the metrics reporting.
 The mute-daemon python utility and the mute-atr.scpt must be executable
 and in /usr/local/bin, and the config file should be in
 /usr/local/etc/mute-daemon.cfg.
-/
+
+
 The teensy code should be loaded onto the board, and the mic is muted by
 grounding PIN 11. If an LED is attached to PIN 9, it will illuminate
 when the mic is "hot", and if an LED is attached to PIN 10, it will
 illuminate when the mic is "cold". The LED will not change until the Mac
 has muted the system-level input and the mute-daemon has responded to
 the teensy.
+
 
 Manually changing the mute state of the Mac will not be reflected by the
 LED.
